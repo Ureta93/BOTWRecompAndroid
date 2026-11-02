@@ -312,8 +312,15 @@ void vk_pace_frame(void) {
     // LARECOMP_VK_ASYNC: the frame is two threads' work - the game's (busy) and the render thread's (its last frame)
     extern bool vk_async_on(void);
     extern uint64_t vk_async_frame_work_ns(void);
+    extern uint64_t kernel_core0_held_ns(void);
+    static uint64_t last_c0_held;
+    uint64_t c0_held = kernel_core0_held_ns();
+    double c0_busy = last_c0_held && c0_held > last_c0_held ? (c0_held - last_c0_held) / 1e6 : 0;
+    last_c0_held = c0_held;
     double render_busy = vk_async_on() ? vk_async_frame_work_ns() / 1e6 : 0;
     double game_busy = busy;
+    if (c0_busy > game_busy && c0_busy <= p / 1e6) game_busy = c0_busy;
+    if (game_busy > busy) busy = game_busy;
     if (render_busy > busy) busy = render_busy;
 #endif
 #ifdef __ANDROID__
@@ -336,11 +343,8 @@ void vk_pace_frame(void) {
         double hint_busy = game_busy;
         double render_cpu = vk_async_on() ? vk_async_frame_cpu_ns() / 1e6 : 0;
         if (render_cpu > hint_busy) hint_busy = render_cpu;
-        // (Frame rate 30, fixed: no 60 fps trial to make room for - the budget is 30 fps's, so the governor stops
-        // running the threads at clocks that would finish them in 13 ms of their 33. LARECOMP_AB=<n>:adpf30: the 60
-        // fps budget on side B)
-        bool fixed30 = g_settings.fps_mode == 1 && AB("adpf30") != 1;
-        plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, (follow && pace_slow) || fixed30 ? 33333333ull : 16666667ull,
+        if (hint_busy < 14.5) hint_busy = 14.5;
+        plat_frame_work_gpu((uint64_t)(hint_busy * 1e6), no_gpu ? 0 : gpu, (follow && pace_slow) ? 33333333ull : 16666667ull,
                             (uint64_t)(game_busy * 1e6));
     }
 #endif
@@ -1121,6 +1125,9 @@ static pthread_cond_t jobs_cond = PTHREAD_COND_INITIALIZER;
 
 static void *worker(void *a) {
     (void)a;
+#ifdef __ANDROID__
+    nice(10);
+#endif
     for (;;) {
         pthread_mutex_lock(&jobs_lock);
         while (!jobs_head) pthread_cond_wait(&jobs_cond, &jobs_lock);
@@ -1148,6 +1155,9 @@ static pthread_mutex_t tjobs_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t tjobs_cond = PTHREAD_COND_INITIALIZER;
 static void *translator(void *a) {
     (void)a;
+#ifdef __ANDROID__
+    nice(5);
+#endif
     for (;;) {
         pthread_mutex_lock(&tjobs_lock);
         while (!tjobs_head) pthread_cond_wait(&tjobs_cond, &tjobs_lock);
@@ -1184,7 +1194,7 @@ static void run_job(void (*fn)(void *), void *arg) {
         int n = cores - 4;
 #ifdef __ANDROID__
         n = cores / 2;
-        if (n > 4) n = 4;  // leave CPU capacity for the game and Vulkan translation
+        if (n > 3) n = 3;  // leave CPU capacity for the game and Vulkan translation
 #endif
         const char *workers = getenv("LARECOMP_SHADER_WORKERS");
         if (workers) n = atoi(workers);
@@ -1209,7 +1219,7 @@ static uint64_t stat_build_wait_ns;
 static void wait_built(_Atomic int *state) {
     if (atomic_load(state)) return;
     uint64_t t0 = plat_now_ns();
-    while (!atomic_load(state)) usleep(200);
+    while (!atomic_load(state)) usleep(50);
     stat_build_wait_ns += plat_now_ns() - t0;
 }
 static bool rt_is_persistent(NvnTexture *t) {
@@ -1512,8 +1522,8 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 // slots of 512 KB each - all of them sized for a terrain tile - were full every frame once its previous one was still
 // on the GPU: the CPU waited for the GPU ~12 times a second, and the game stuttered (2026-10-27, 8,700 waits in 20
 // minutes). Now four frames of small ones fit, in about as much memory as before.
-#define WB_SMALL 128
-#define WB_BIG 32
+#define WB_SMALL 512
+#define WB_BIG 96
 #define WB_SLOTS (WB_SMALL + WB_BIG)
 typedef struct { uint64_t seq, addr, pitch, off, order; uint32_t wb, hb, bpb, bh, fmt, size; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear; off, size: its slot in wb_buf; order: when queued)
 static WbEntry wb_ent[WB_SLOTS];
@@ -1571,6 +1581,13 @@ static void wb_queue(NvnTexture *t) {
     int *next = small ? &wb_next_small : &wb_next_big;
     int base = small ? 0 : WB_SMALL, count = small ? WB_SMALL : WB_BIG;
     WbEntry *e = &wb_ent[base + *next];
+    if (e->busy) {
+        uint64_t done = 0;
+        pthread_mutex_unlock(&wb_lock);
+        if (vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &done) == VK_SUCCESS && done) wb_apply(done);
+        pthread_mutex_lock(&wb_lock);
+        e = &wb_ent[base + *next];
+    }
     if (e->busy) {
         // Every slot still waits for the GPU. Dropped, the target's texels never reached memory: a tower's cutscene
         // draws the region's terrain height tiles (8 levels of 256x256 a tile) in a burst, the heights stayed stale and
@@ -2592,21 +2609,26 @@ static void translate_program(void *arg) {
 #define PROG_TAB 4096
 static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
 
+static NvnProgram *g_last_np;
+static Prog *g_last_prog;
+
 static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!(np->stage_mask & 1) || !(np->stage_mask & 2)) return NULL;
     // (the previous draw's program and keys again - most draws: no hashing; the code addresses are part of it, as
     // the program object can be reused for other code)
-    static NvnProgram *last_np;
     static uint64_t last_code[2];
     static ShaderKey last_vkey, last_fkey;
-    static Prog *last_prog;
-    if (last_prog && np == last_np && last_code[0] == np->stages[0].code_addr && last_code[1] == np->stages[1].code_addr &&
+    if (g_last_prog && np == g_last_np && last_code[0] == np->stages[0].code_addr && last_code[1] == np->stages[1].code_addr &&
         !memcmp(vkey, &last_vkey, sizeof *vkey) && !memcmp(fkey, &last_fkey, sizeof *fkey))
-        return last_prog;
-    last_np = np, last_code[0] = np->stages[0].code_addr, last_code[1] = np->stages[1].code_addr;
+        return g_last_prog;
+    g_last_np = np, last_code[0] = np->stages[0].code_addr, last_code[1] = np->stages[1].code_addr;
     last_vkey = *vkey, last_fkey = *fkey;
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
+    for (int i = 0; i < 2; i++) {
+        uint64_t a = np->stages[i].code_addr;
+        if (a >= HEAP_BASE && a + 0x100 <= HEAP_BASE + HEAP_MAX) h = hmix(h, (const void *)(uintptr_t)a, 0x100);
+        else for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; }
+    }
     h = hash_words(h, vkey, sizeof *vkey);  // (8 bytes a step: the table is in memory only)
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
 #ifdef __ANDROID__
@@ -2615,9 +2637,9 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     if (!h) h = 1;
     uint32_t slot = (uint32_t)(h ^ (h >> 31)) & (PROG_TAB - 1);
     while (prog_tab[slot].key && prog_tab[slot].key != h) slot = (slot + 1) & (PROG_TAB - 1);
-    if (prog_tab[slot].key) return last_prog = prog_tab[slot].prog;
+    if (prog_tab[slot].key) return g_last_prog = prog_tab[slot].prog;
     Prog *p = calloc(1, sizeof *p);
-    last_prog = p;
+    g_last_prog = p;
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
     for (int i = 0; i < 2; i++) {
@@ -3907,7 +3929,7 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 // rows there (the sync lag lets the CPU run a frame ahead). LARECOMP_CB_WINDOW=1: on (a test).
 static bool cbwin_wanted(void) {
     static int on = -1;
-    if (on < 0) on = getenv("LARECOMP_CB_WINDOW") && atoi(getenv("LARECOMP_CB_WINDOW"));
+    if (on < 0) on = !getenv("LARECOMP_CB_WINDOW") || atoi(getenv("LARECOMP_CB_WINDOW")) != 0;
     return on && gmem_placed;
 }
 // (the update marks are guest addresses: a reboot's game puts other things there)
@@ -5256,8 +5278,22 @@ static int g_cs_n;  // (compute program table below)
 // address (the old Prog / Pipe objects are leaked, so pipeline keys holding their pointers can't collide), compute
 // programs, shared copies - and the heap import: its pages are replaced (re-imported on first use).
 void vk_exec_reset(void) {
-    memset(prog_tab, 0, sizeof prog_tab);
-    memset(pipe_tab, 0, sizeof pipe_tab);
+    g_last_np = NULL;
+    g_last_prog = NULL;
+    // Keep already-compiled Prog (state == 1) and Pipe (state == 1) entries across reboots so returning to the title
+    // screen does not re-translate and re-compile all shaders from scratch; only drop in-flight/failed entries.
+    for (int i = 0; i < PROG_TAB; i++) {
+        if (prog_tab[i].prog && atomic_load(&prog_tab[i].prog->state) != 1) {
+            prog_tab[i].key = 0;
+            prog_tab[i].prog = NULL;
+        }
+    }
+    for (int i = 0; i < PIPE_TAB; i++) {
+        if (pipe_tab[i].pipe && atomic_load(&pipe_tab[i].pipe->state) != 1) {
+            pipe_tab[i].key = 0;
+            pipe_tab[i].pipe = NULL;
+        }
+    }
     g_cs_n = 0;
     gcopy_gen++;
     if (gmem_buf) {
