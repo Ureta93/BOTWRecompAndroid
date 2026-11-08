@@ -40,7 +40,11 @@ static int on = -1;
 
 // The game's thread may run this many frames ahead of the render thread (the translation of one frame overlaps the
 // game's work on the next; more only adds latency). LARECOMP_VK_ASYNC_AHEAD=n.
+#ifdef __ANDROID__
+static int ahead = 2;
+#else
 static int ahead = 1;
+#endif
 
 // The render thread's work for its last frame (requests run between two presents, ns): the frame pacer's other half
 static uint64_t frame_work, last_frame_work, frame_cpu, last_frame_cpu;

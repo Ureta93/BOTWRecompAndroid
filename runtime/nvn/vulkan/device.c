@@ -896,7 +896,8 @@ static void create_device(void) {
             if (data && fread(data, 1, (size_t)length, fp) == (size_t)length &&
                 vk_backend_cache_compatible(data, (size_t)length, &g_vk.props)) sz = (size_t)length;
         }
-        if (!sz) { LOG("[vk-cache] ignoring unreadable, malformed or incompatible pipeline cache; starting empty\n");
+        if (sz) { LOG("[vk-cache] successfully loaded pipeline cache: %zu bytes\n", sz); }
+        else { LOG("[vk-cache] ignoring unreadable, malformed or incompatible pipeline cache; starting empty\n");
             free(data); data = NULL; }
 #else
         fseek(fp, 0, SEEK_END);
@@ -1906,8 +1907,15 @@ bool vk_adreno_8xx(const char *name) {
     int n = atoi(a);
     return n >= 800 && n < 900;
 }
-// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU
-bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.props.deviceName) : setting != 0; }
+bool vk_adreno_740_or_up(const char *name) {
+    const char *a = name ? strstr(name, "Adreno") : NULL;
+    if (!a) return false;
+    while (*a && (*a < '0' || *a > '9')) a++;
+    int n = atoi(a);
+    return n >= 740 && n < 900;
+}
+// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU (Adreno 740+ / 8xx safe for in-place reads)
+bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_740_or_up(g_vk.props.deviceName) : setting != 0; }
 // gpu_heap's: Automatic is on wherever Turnip can place the heap. Off on a Turnip Adreno 7xx (an Adreno 732, which
 // Turnip names "Adreno (TM) 735": PR #103), the game's text glyphs (a buffer ~2.7 GB into the 3 GB heap, past Turnip's
 // 128 MB storage range) read as zeros - every menu, dialogue and item name blank. Only the heap: 0.2.5 widened
@@ -1963,7 +1971,7 @@ void ui_window_init(void) {
             }
             if (!model[0]) snprintf(model, sizeof model, "%s", g_settings.gpu_model);
         }
-        if (lrz < 0) lrz = !model[0] || vk_adreno_8xx(model);
+        if (lrz < 0) lrz = !model[0] || vk_adreno_740_or_up(model);
         {   // #32: on the Adreno 840 and up (Mesa's a8xx, the Turnip Gen8 drivers from V30), shadowed ground turns red -
             // ir3 moving a shader's uniform buffer into its constants reads a draw's constants stale. With that off: no
             // tint and the same ~40 fps (a Z Fold 8). An IR3_SHADER_DEBUG from the driver variables wins.

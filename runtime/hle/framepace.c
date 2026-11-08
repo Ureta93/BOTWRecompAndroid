@@ -234,7 +234,7 @@ void rt_vfr_update(uint64_t vfr) {
     if (g_settings.fps_mode == 4) iv = 1, slow = ratio;
     else if (iv == 1 && slow > 0.85) iv = 2;
     else if (iv == 2 && slow < 0.7) iv = 1;
-    else if (iv == 2 && slow > 1.3) iv = 3;
+    else if (iv == 2 && slow > 1.3 && g_settings.fps_mode == 3) iv = 3;  // only drop to 20 fps if 20 fps mode selected
     else if (iv == 3 && slow < 1.15) iv = 2;
     VF(float, vfr, VFR_RATIO) = ratio;
     VF(float, vfr, VFR_NEW_RATIO) = ratio;

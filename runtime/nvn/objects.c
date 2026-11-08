@@ -1389,7 +1389,7 @@ NVN(nvnWindowGetPresentInterval) { RET(WIN->interval); }
 // where the game picks (1.0.0 / 1.6.0; 1.8.2 and 1.9.0 keep the pace by the runtime's clock, hle/framepace.c).
 int64_t rt_frame_ticks(int64_t ticks) {
     if (!g_settings.fps_mode) return ticks;
-    if (g_settings.fps_mode == 4) {  // (Frame rate 40 / 45: its 25 / 22 ms frames picked the 30 fps mode, interval 2)
+    if (g_settings.fps_mode == 4 || g_settings.fps_mode == 2) {  // (Frame rate 40 / 45 / 60: pick interval 1)
         const int64_t cap = 19200000ll * 90 / 100 / 60;  // (0.9 vsyncs: interval 1)
         return ticks > cap ? cap : ticks;
     }
@@ -1414,11 +1414,11 @@ NVN(nvnWindowSetPresentInterval) {
     // two, and Link sank into the ground after a hit (2026-11-02; with 3 held he didn't). Following the clock's
     // interval, not the setting, keeps the two together while the frame rate changes too.
     if (framepace_on() && c->x[30] == GUEST_LO + (g_game_version == 190 ? 0x11267c4ull : 0x1012a34ull)) {
-        bool twenty = framepace_interval() == 3;
+        bool twenty = g_settings.fps_mode == 3 && framepace_interval() == 3;
         uint32_t *max_iv = (uint32_t *)(uintptr_t)(c->x[19] + 0x234), top = twenty ? 3 : 2;
         if (*max_iv > top) *max_iv = top;
         if (force <= 0 && twenty) c->x[1] = 3;
-        else if (force <= 0 && g_settings.fps_mode == 4) c->x[1] = 1;  // (Frame rate 40 / 45: the clock's interval 1 too)
+        else if (force <= 0 && (g_settings.fps_mode == 4 || g_settings.fps_mode == 2)) c->x[1] = 1;  // (Frame rate 40 / 45 / 60: interval 1)
         else if (force <= 0 && c->x[1] > 2) c->x[1] = 2;  // (out of it: not left at 3)
     }
     if ((int)A(1) != g_present_interval)
