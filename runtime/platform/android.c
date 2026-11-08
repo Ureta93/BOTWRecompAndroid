@@ -911,8 +911,9 @@ static void uclamp_min_thread(void) {
 // (vulkan/exec.c vk_low_ram - the weak phones); LARECOMP_RENDER_BIG=1 / 0.
 void plat_render_thread_pin(void) {
     const char *e = getenv("LARECOMP_RENDER_BIG");
-    extern bool vk_low_ram(void);
-    if (e ? !atoi(e) : !vk_low_ram()) return;
+    // Do NOT pin render thread automatically on low RAM - on Snapdragon 8 Gen 2 this pins strictly to the
+    // solitary Cortex-X3 prime core (Core 7), running it at 3.19 GHz and causing 89C thermal throttling.
+    if (!e || !atoi(e)) return;
     long best = 0, mhz[64] = {0};
     int n = 0;
     for (int c = 0; c < 64; c++) {

@@ -989,8 +989,8 @@ bool vk_low_ram(void) {
             if (fscanf(f, "MemTotal: %ld kB", &total_kb) != 1) total_kb = 0;
             fclose(f);
         }
-        low = e ? atoi(e) != 0 : total_kb && total_kb < 6L * 1024 * 1024;
-        if (low) LOG("[vk] low on RAM (%ld MB): smaller buffers\n", total_kb >> 10);
+        low = e ? atoi(e) != 0 : total_kb && total_kb <= 8L * 1024 * 1024;
+        if (low) LOG("[vk] low on RAM (%ld MB, dual-screen handheld friendly): smaller buffers, 1500 pipeline cap\n", total_kb >> 10);
     }
     return low;
 }
