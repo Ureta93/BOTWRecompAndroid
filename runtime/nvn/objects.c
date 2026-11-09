@@ -327,8 +327,8 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
         static uint64_t world_since;
         uint64_t now = renderer_present_count(), seen = vk_scene_frame();
         bool world = !framepace_on_title() && seen && (now - seen < 20 || framepace_in_menu());
-        if (!world) world_since = 0;
-        else if (!world_since) world_since = now;
+        if (framepace_on_title()) world_since = 0;
+        else if (world && !world_since) world_since = now;
         if (!world_since || now - world_since < LAG_SETTLE) lag = 0;
     }
     extern int vk_ab(const char *what);

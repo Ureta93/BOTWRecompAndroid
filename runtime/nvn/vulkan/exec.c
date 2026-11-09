@@ -3050,10 +3050,9 @@ static Pipe *last_pipeline;  // (draw_'s: the previous draw's, reused when nothi
 static int pipe_keep(void) {
     static int keep = -1;
     if (keep < 0) {
-        extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_PIPE_KEEP");
-        // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained; on Adreno evicting causes dropped terrain draws.
-        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 2000 : 0;
+        // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained; on Adreno evicting causes dropped terrain draws and stalls.
+        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5) ? 2000 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
