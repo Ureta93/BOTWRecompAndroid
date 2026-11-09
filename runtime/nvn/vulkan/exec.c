@@ -1584,8 +1584,8 @@ static uint64_t wb_max(void) {  // (LARECOMP_WRITEBACK_MAX=<bytes>: a larger lim
 // slots of 512 KB each - all of them sized for a terrain tile - were full every frame once its previous one was still
 // on the GPU: the CPU waited for the GPU ~12 times a second, and the game stuttered (2026-10-27, 8,700 waits in 20
 // minutes). Now four frames of small ones fit, in about as much memory as before.
-#define WB_SMALL 512
-#define WB_BIG 96
+#define WB_SMALL 128
+#define WB_BIG 32
 #define WB_SLOTS (WB_SMALL + WB_BIG)
 typedef struct { uint64_t seq, addr, pitch, off, order; uint32_t wb, hb, bpb, bh, fmt, size; bool busy; } WbEntry;  // (pitch: linear rows, 0: block-linear; off, size: its slot in wb_buf; order: when queued)
 static WbEntry wb_ent[WB_SLOTS];
@@ -2770,11 +2770,7 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
     g_last_np = np, last_code[0] = np->stages[0].code_addr, last_code[1] = np->stages[1].code_addr;
     last_vkey = *vkey, last_fkey = *fkey;
     uint64_t h = 0xcbf29ce484222325ull;
-    for (int i = 0; i < 2; i++) {
-        uint64_t a = np->stages[i].code_addr;
-        if (a >= HEAP_BASE && a + 0x100 <= HEAP_BASE + HEAP_MAX) h = hmix(h, (const void *)(uintptr_t)a, 0x100);
-        else for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; }
-    }
+    for (int i = 0; i < 2; i++) { uint64_t a = np->stages[i].code_addr; for (int k = 0; k < 8; k++) { h ^= (a >> (k * 8)) & 0xFF; h *= 0x100000001B3ull; } }
     h = hash_words(h, vkey, sizeof *vkey);  // (8 bytes a step: the table is in memory only)
     for (int i = 0; i < 8; i++) { h ^= fkey->rt_kind[i]; h *= 0x100000001B3ull; }
 #ifdef __ANDROID__
@@ -3057,7 +3053,7 @@ static int pipe_keep(void) {
         extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_PIPE_KEEP");
         // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained; on Adreno evicting causes dropped terrain draws.
-        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5) ? 1500 : 0;
+        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 2000 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
@@ -4240,7 +4236,7 @@ static bool ubo_direct(uint64_t addr, uint64_t size, VkDescriptorBufferInfo *out
 // rows there (the sync lag lets the CPU run a frame ahead). LARECOMP_CB_WINDOW=1: on (a test).
 static bool cbwin_wanted(void) {
     static int on = -1;
-    if (on < 0) on = !getenv("LARECOMP_CB_WINDOW") || atoi(getenv("LARECOMP_CB_WINDOW")) != 0;
+    if (on < 0) on = getenv("LARECOMP_CB_WINDOW") && atoi(getenv("LARECOMP_CB_WINDOW"));
     return on && gmem_placed;
 }
 // (the update marks are guest addresses: a reboot's game puts other things there)
@@ -5701,18 +5697,8 @@ void vk_exec_reset(void) {
     g_last_prog = NULL;
     // Keep already-compiled Prog (state == 1) and Pipe (state == 1) entries across reboots so returning to the title
     // screen does not re-translate and re-compile all shaders from scratch; only drop in-flight/failed entries.
-    for (int i = 0; i < PROG_TAB; i++) {
-        if (prog_tab[i].prog && atomic_load(&prog_tab[i].prog->state) != 1) {
-            prog_tab[i].key = 0;
-            prog_tab[i].prog = NULL;
-        }
-    }
-    for (int i = 0; i < PIPE_TAB; i++) {
-        if (pipe_tab[i].pipe && atomic_load(&pipe_tab[i].pipe->state) != 1) {
-            pipe_tab[i].key = 0;
-            pipe_tab[i].pipe = NULL;
-        }
-    }
+    memset(prog_tab, 0, sizeof prog_tab);
+    memset(pipe_tab, 0, sizeof pipe_tab);
     g_cs_n = 0;
     gcopy_gen++;
     if (gmem_buf) {
