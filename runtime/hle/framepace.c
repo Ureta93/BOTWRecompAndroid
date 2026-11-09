@@ -231,7 +231,7 @@ void rt_vfr_update(uint64_t vfr) {
     uint32_t iv = g_vfr_iv;
     // (Frame rate 40 / 45: the game's 60 fps way, interval 1, whatever the ratio - at 40 (0.75) the rule below kept 2
     // while the frame loop ran at 1 (nvn/objects.c), the mismatch that sank Link at 20 fps)
-    if (g_settings.fps_mode == 4) iv = 1, slow = ratio;
+    if (g_settings.fps_mode == 4 || g_settings.fps_mode == 2) iv = 1, slow = ratio;
     else if (iv == 1 && slow > 0.85) iv = 2;
     else if (iv == 2 && slow < 0.7) iv = 1;
     else if (iv == 2 && slow > 1.3 && g_settings.fps_mode == 3) iv = 3;  // only drop to 20 fps if 20 fps mode selected
