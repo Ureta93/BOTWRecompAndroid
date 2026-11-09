@@ -3056,7 +3056,8 @@ static int pipe_keep(void) {
     if (keep < 0) {
         extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_PIPE_KEEP");
-        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 1500 : 0;
+        // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained; on Adreno evicting causes dropped terrain draws.
+        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5) ? 1500 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;

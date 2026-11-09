@@ -517,8 +517,10 @@ static void create_image(NvnTexture *t, TexBackend *b) {
         if (half < 0) {
             extern bool vk_low_ram(void);
             const char *e = getenv("LARECOMP_HALF_TEXTURES");
-            half = e ? atoi(e) != 0 : vk_low_ram();
-            if (half) LOG("[vk] textures from their second level (half size): low RAM\n");
+            // Only halve textures if explicitly requested by environment variable, never automatically;
+            // skipping mip 0 corrupts BOTW's terrain height maps and makes geometry invisible.
+            half = e ? atoi(e) != 0 : 0;
+            if (half) LOG("[vk] textures from their second level (half size): explicit opt-in\n");
         }
         b->skip = 0;
         if (half && !depthfmt && b->rs_group == RS_NONE && !(t->flags & (8 | 0x50)) && type == VK_IMAGE_TYPE_2D &&
