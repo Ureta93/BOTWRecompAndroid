@@ -1914,8 +1914,8 @@ bool vk_adreno_740_or_up(const char *name) {
     int n = atoi(a);
     return n >= 740 && n < 900;
 }
-// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU (Adreno 8xx only; on 7xx inplace reads corrupt terrain)
-bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_8xx(g_vk.props.deviceName) : setting != 0; }
+// A Turnip path's setting (-1 Automatic, 1 on, 0 off) for this GPU (Adreno 740+ / 8xx safe for in-place reads)
+bool vk_turnip_path_on(int setting) { return setting < 0 ? vk_adreno_740_or_up(g_vk.props.deviceName) : setting != 0; }
 // gpu_heap's: Automatic is on wherever Turnip can place the heap. Off on a Turnip Adreno 7xx (an Adreno 732, which
 // Turnip names "Adreno (TM) 735": PR #103), the game's text glyphs (a buffer ~2.7 GB into the 3 GB heap, past Turnip's
 // 128 MB storage range) read as zeros - every menu, dialogue and item name blank. Only the heap: 0.2.5 widened
