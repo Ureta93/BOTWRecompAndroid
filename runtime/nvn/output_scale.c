@@ -32,7 +32,28 @@ static double g_dyn_last_raise = -100;
 static void dyn_update(double now, double gpu_ms) {
     double dt = g_last_t > 0 ? (now - g_last_t) * 1000.0 : 16.7;
     g_last_t = now;
-    if (dt > 250) return;  // (loading, menus, a stall: not the GPU's steady state)
+    extern bool widescreen_in_menu(void), menu_is_open(void);
+    extern uint64_t vk_scene_frame(void), renderer_present_count(void), vk_compiles_total(void);
+    uint64_t present = renderer_present_count(), seen = vk_scene_frame();
+    uint64_t compiles = vk_compiles_total();
+    static uint64_t prev_compiles, win_compiles;
+    static double settle_until;
+    static bool was_loading = true;
+    uint64_t delta_c = compiles > prev_compiles ? compiles - prev_compiles : 0;
+    prev_compiles = compiles;
+    // Detect real loads / title -> world transitions so initial shader compile + LAG_SETTLE don't tank dynamic res.
+    if (framepace_on_title() || !seen || present - seen > 20) was_loading = true;
+    else if (was_loading) { was_loading = false; settle_until = now + 10.0; }
+    if (delta_c >= 5) { if (now + 2.5 > settle_until) settle_until = now + 2.5; }
+    // Freeze dynamic scale during title/loads/menus (and page turns via widescreen_in_menu / overlay menu) so reusing
+    // the static blurred backdrop texture does not hit rs_stale() and get cleared to black.
+    if (dt > 250 || framepace_on_title() || framepace_in_menu() || widescreen_in_menu() || menu_is_open() ||
+        !seen || present - seen > 5 || now < settle_until) {
+        g_dyn_dt_sum = g_dyn_gpu_sum = 0;
+        g_dyn_n = g_dyn_gpu_n = 0;
+        win_compiles = compiles;
+        return;
+    }
     double want = framepace_on() && framepace_target() > 0 ? 1000.0 / framepace_target() : 1000.0 / 30;  // (ms a frame)
 #ifdef __ANDROID__
     // the frame rate it keeps: 60 with Frame rate at 60 fps, else 30 - Auto's 60 comes by itself where the GPU has room.
@@ -46,7 +67,9 @@ static void dyn_update(double now, double gpu_ms) {
     double avg_dt = g_dyn_dt_sum / g_dyn_n, avg_gpu = g_dyn_gpu_n ? g_dyn_gpu_sum / g_dyn_gpu_n : -1;
     g_dyn_dt_sum = g_dyn_gpu_sum = 0;
     g_dyn_n = g_dyn_gpu_n = 0;
-    if (now < g_dyn_cool_until) return;
+    uint64_t win_c = compiles > win_compiles ? compiles - win_compiles : 0;
+    win_compiles = compiles;
+    if (win_c >= 15 || now < g_dyn_cool_until) return;
     double prev = g_dyn;
     // With the GPU's time: slow frames lower the scale only while the GPU is busy most of them - else the CPU holds
     // them, and a smaller image doesn't help (on the POCO 36 ms frames with 25 ms of GPU kept lowering it)

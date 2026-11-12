@@ -324,9 +324,10 @@ NVN(nvnSyncWait) {  // NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED
     if (lag > 0 && env_lag < 0) {
         enum { LAG_SETTLE = 300 };
         extern uint64_t vk_scene_frame(void), renderer_present_count(void);
+        extern bool widescreen_in_menu(void), menu_is_open(void);
         static uint64_t world_since;
         uint64_t now = renderer_present_count(), seen = vk_scene_frame();
-        bool world = !framepace_on_title() && seen && (now - seen < 20 || framepace_in_menu());
+        bool world = !framepace_on_title() && seen && (now - seen < 20 || framepace_in_menu() || widescreen_in_menu() || menu_is_open());
         if (!world) world_since = 0;
         else if (!world_since) world_since = now;
         if (!world_since || now - world_since < LAG_SETTLE) lag = 0;

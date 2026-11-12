@@ -765,9 +765,22 @@ JNIEXPORT void JNICALL Java_com_botwrecompandroid_BOTWRecompAndroidActivity_nati
                 fclose(pf);
             }
         }
-        LOG("[power] %.2f W battery %.1f C soc %.1f C cpu %.0f%% mhz %s thermal %d headroom %.2f frame %llu ab %d | mem avail %u MB rss %u MB swap %llu MB psi10 %s\n", watts,
-            batt_temp_c, s.soc_temp_c, s.cpu_pct, mhz, thermal, headroom, (unsigned long long)renderer_present_count(), vk_ab(NULL),
-            (unsigned)s.avail_mb, (unsigned)s.rss_mb, swap_used_mb, psi);
+        static long prev_majflt = -1, prev_nivcsw = -1;
+        long dmaj = 0, dniv = 0;
+        struct rusage ru;
+        if (getrusage(RUSAGE_SELF, &ru) == 0) {
+            if (prev_majflt >= 0) {
+                dmaj = ru.ru_majflt - prev_majflt;
+                dniv = ru.ru_nivcsw - prev_nivcsw;
+            }
+            prev_majflt = ru.ru_majflt;
+            prev_nivcsw = ru.ru_nivcsw;
+        }
+        PlatAdpfStats as;
+        plat_adpf_stats(&as);
+        LOG("[power] %.2f W battery %.1f C soc %.1f C cpu %.0f%% mhz %s c%d/%d thermal %d headroom %.2f frame %llu ab %d | mem avail %u MB rss %u MB swap %llu MB psi10 %s maj %ld niv %ld\n", watts,
+            batt_temp_c, s.soc_temp_c, s.cpu_pct, mhz, as.game_cpu, as.render_cpu, thermal, headroom, (unsigned long long)renderer_present_count(), vk_ab(NULL),
+            (unsigned)s.avail_mb, (unsigned)s.rss_mb, swap_used_mb, psi, dmaj, dniv);
     }
 }
 
@@ -905,16 +918,16 @@ static void uclamp_min_thread(void) {
         LOG("[android] uclamp.min %d for the game's threads: %s\n", want, r ? strerror(errno) : "ok");
 }
 
-// The render thread (vulkan/async.c, ours: no part of the game's job system that LARECOMP_PIN broke) on the fastest
-// cores. Left to the scheduler on a Galaxy Tab A9+ (Snapdragon 695: 2 x A78, 6 x A55) it sat on a little core,
-// 90 ms a frame translating the world, while the game's thread had a big one (2026-11-08). Default: on low RAM
-// (vulkan/exec.c vk_low_ram - the weak phones); LARECOMP_RENDER_BIG=1 / 0.
+// The render thread (vulkan/async.c, ours: no part of the game's job system that LARECOMP_PIN broke) off the
+// little cores. Left to the scheduler it can sit on a little core (A510/A55), doubling CPU exec time; keeping all
+// non-little cores (Gold + Prime) avoids overheating a solitary Prime core (89C on SD8G2 when pinned only to core 7).
+// LARECOMP_RENDER_BIG=0: off, =1 (default): non-little cores, =2: fastest cluster only.
 void plat_render_thread_pin(void) {
+    setpriority(PRIO_PROCESS, (id_t)gettid(), -8);  // (THREAD_PRIORITY_DISPLAY; match vsync priority)
     const char *e = getenv("LARECOMP_RENDER_BIG");
-    // Do NOT pin render thread automatically on low RAM - on Snapdragon 8 Gen 2 this pins strictly to the
-    // solitary Cortex-X3 prime core (Core 7), running it at 3.19 GHz and causing 89C thermal throttling.
-    if (!e || !atoi(e)) return;
-    long best = 0, mhz[64] = {0};
+    int mode = e ? atoi(e) : 1;
+    if (mode <= 0) return;
+    long best = 0, lowest = 0, mhz[64] = {0};
     int n = 0;
     for (int c = 0; c < 64; c++) {
         char path[96];
@@ -923,20 +936,29 @@ void plat_render_thread_pin(void) {
         if (!f) continue;
         if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0;
         fclose(f);
-        if (mhz[c] > best) best = mhz[c];
+        if (mhz[c] > 0) {
+            if (mhz[c] > best) best = mhz[c];
+            if (!lowest || mhz[c] < lowest) lowest = mhz[c];
+        }
         n = c + 1;
     }
+    if (!best || !lowest || lowest == best) return;
     cpu_set_t set;
     CPU_ZERO(&set);
     int k = 0;
-    for (int c = 0; c < n; c++)
-        if (mhz[c] == best) {
+    long min_sel = 0;
+    for (int c = 0; c < n; c++) {
+        if (!mhz[c]) continue;
+        if (mode >= 2 ? (mhz[c] == best) : (mhz[c] > lowest)) {
             CPU_SET(c, &set);
+            if (!min_sel || mhz[c] < min_sel) min_sel = mhz[c];
             k++;
         }
-    if (!best || k == 0 || k == n) return;
+    }
+    if (k == 0 || k == n) return;
     int r = sched_setaffinity(0, sizeof set, &set);
-    LOG("[android] render thread on the %d fastest cores (%ld MHz): %s\n", k, best / 1000, r ? strerror(errno) : "ok");
+    LOG("[android] render thread on %d %s cores (%ld-%ld MHz): %s\n",
+        k, mode >= 2 ? "prime" : "non-little", min_sel / 1000, best / 1000, r ? strerror(errno) : "ok");
 }
 
 void plat_thread_unpin(void) {

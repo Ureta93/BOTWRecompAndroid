@@ -3052,8 +3052,9 @@ static int pipe_keep(void) {
     if (keep < 0) {
         extern bool vk_low_ram(void);
         const char *e = getenv("LARECOMP_PIPE_KEEP");
-        // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained; on Adreno evicting causes dropped terrain draws.
-        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5 || vk_low_ram()) ? 2000 : 0;
+        // Only evict pipelines on Mali (0x13B5) where RAM is severely constrained, or softly at high counts on low-RAM
+        // handhelds; aggressive eviction destroys active area pipelines after pausing/menus and causes recompile stalls.
+        keep = e ? atoi(e) : (g_vk.props.vendorID == 0x13B5) ? 2000 : vk_low_ram() ? 2800 : 0;
         if (keep > 0) LOG("[vk] pipelines kept: at most %d (the least recently used ones destroyed)\n", keep);
     }
     return keep;
@@ -3064,6 +3065,8 @@ static void pipe_evict(void) {
     uint64_t now = SDL_GetTicksNS();
     int keep = pipe_keep();
     if (keep <= 0 || now < next) return;
+    extern bool framepace_on_title(void), framepace_in_menu(void), menu_is_open(void);
+    if (framepace_on_title() || framepace_in_menu() || menu_is_open()) return;
     next = now + 10000000000ull;  // (every 10 s)
     int live = 0;
     for (int i = 0; i < PIPE_TAB; i++) {
@@ -3072,9 +3075,9 @@ static void pipe_evict(void) {
     }
     if (live <= keep) return;
     uint64_t done = vk_completed_seq();
-    int target = keep * 4 / 5, gone = 0;
-    // oldest first: two passes, the unused for 2 minutes, then for 30 s
-    static const uint64_t ages[2] = {120000000000ull, 30000000000ull};
+    int target = keep * 9 / 10, gone = 0;
+    // oldest first: two passes, the unused for 5 minutes, then for 2 minutes
+    static const uint64_t ages[2] = {300000000000ull, 120000000000ull};
     for (int pass = 0; pass < 2 && live > target; pass++) {
         uint64_t age = ages[pass];
         for (int i = 0; i < PIPE_TAB && live > target; i++) {
